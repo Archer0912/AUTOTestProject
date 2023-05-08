@@ -173,6 +173,6 @@ if __name__ == '__main__':
 
     atc = AutoTestCls(opt)
     atc.InitCaseForm()
-    atc.rename_benchout()
+    # atc.rename_benchout()
     atc.cp_log_file()
-    atc.cp_benchout()
+    # atc.cp_benchout()

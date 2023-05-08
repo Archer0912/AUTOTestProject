@@ -34,7 +34,7 @@
 ; --ccost: 是否进行时间对比，默认对比（目前只有测试集 0 1 2 有golden时间，运行其余测试集请设置为0）
     ;cost_div > 0 代表新版本时间比golden时间长的百分比
     ;cost_div < 0 代表新版本时间比golden时间短，仿真时间变快
-
+; --logtime: 是否进log日志得 CPTtime 和 Walltime 的比较，默认是 0 不进行比较
 
 ; rp: 
 ; all: "All_regress_Cases",
