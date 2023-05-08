@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 import collections
-from tool_utils import get_rmse, get_mape, AlignDataLen, max_diff
+from tool_utils import get_rmse, get_mape, AlignDataLen, max_diff, cos_sim
 import threading
 import sys
 
@@ -26,12 +26,15 @@ class AutoTestCls():
         self.time_list = []
         self.str_list = []
         self.sh = opt.sh
-        self.si = opt.si
-        self.version = opt.btdVersion
+        self.exsign = opt.si
+        self.version = opt.bv
         self.dir_dict = {
             "all": "All_regress_Cases",
             "hisi": "hisiCaseAll",
             "huali": "regress_Cases_all-cmg-bulk_20230307-1400",
+            "0": "All_regress_Cases",
+            "1": "hisiCaseAll",
+            "2": "regress_Cases_all-cmg-bulk_20230307-1400",
             "3": "RegressCasesCircuitLimit5K_20230330-1000",
             "4": "cmg_regress_Cases_version-107_20220909",
             "5": "cmg_regress_Cases_version-110.0_20220705",
@@ -120,9 +123,9 @@ class AutoTestCls():
                         caseindex = netfile.split('case')[1].split('/')[0]
                         if(ret == 1):
                             continue
-                        if self.si == "huali" and caseindex >=1000:
+                        if self.exsign == "huali" and int(caseindex) >=1000:
                             continue
-                        elif self.si == "hisi" and caseindex <=1000:
+                        elif self.exsign == "hisi" and int(caseindex) <=1000:
                             continue
                         if 'model' in netfile or 'gpdk' in netfile or 'INCLUDE' in netfile:
                             continue
@@ -434,10 +437,10 @@ class AutoTestCls():
     # 根据netlist name 获取 caseindex,后续根据caseindex去找对应的输出节点
     def getCaseIndex(self, index):
         netfile = self.data_df_simulator.loc[index].netFile
-        print(netfile)
+        # print(netfile)
         # netfile: /home/IC/Case_wayne/TestBench_1BaseCases1/>>>>>case1<<<<<</VCO/lab1_pss_pnoise_btd.scs
         caseindex = netfile.split('case')[1].split('/')[0]
-        print(caseindex)
+        # print(caseindex)
         return int(caseindex)
 
     # cost 获得的time的比较 只对仿真时间大于 100S 的进行比较
@@ -580,22 +583,29 @@ class AutoTestCls():
                             metrix_value = get_rmse(outdata, refdata)
                         else:
                             metrix_value = get_mape(outdata, refdata)
+                        cos_s = cos_sim(outdata, refdata)
                         comp_value = 3e-2
+                        comp_value_cos = 1e-2
                         unit = nodename.split("----")[-1]
                         if unit=="A":
                             metrix_value2 = max_diff(outdata, refdata)
                             comp_value2 = 1e-9
                             compareflag1 = True if metrix_value <= comp_value else False
                             compareflag2 = True if metrix_value2 <= comp_value2 else False
-                            compareflag = compareflag1 | compareflag2
+                            compareflag3 = True if cos_s <= comp_value_cos else False
+                            compareflag = compareflag1 | compareflag2 | compareflag3
                         elif unit=="V":
                             metrix_value2 = max_diff(outdata, refdata)
                             comp_value2 = 1e-4
                             compareflag1 = True if metrix_value <= comp_value else False
                             compareflag2 = True if metrix_value2 <= comp_value2 else False
-                            compareflag = compareflag1 | compareflag2
+                            compareflag3 = True if cos_s <= comp_value_cos else False
+                            compareflag = compareflag1 | compareflag2 | compareflag3
                         else:
-                            compareflag = True if metrix_value <= comp_value else False
+                            compareflag1 = True if metrix_value <= comp_value else False
+                            compareflag3 = True if cos_s <= comp_value_cos else False
+                            compareflag = compareflag1 | compareflag3
+                        
                         if plotname_node in comp_result.keys():
                             if compareflag == False:
                                 comp_result[plotname_node+"_"+str(tag)] = str((metrix_value, comp_value, compareflag))
@@ -796,6 +806,8 @@ class AutoTestCls():
                         results_2_dict, plotname_arr2 = self.outfile_parser(ref_file)
 
                         # 计算误差
+                        print(f"\nINFO: Start calculating the deviation:")
+                        print(f"    {outfile}")
                         compare, com_result = self.calc_error(netId, results_1_dict, results_2_dict)
 
                     # 如果参数指定了保存图片，则开始画图
@@ -813,7 +825,7 @@ class AutoTestCls():
             end = time.time()
             cost = end-start
             self.data_df_diff.loc[netId, "outdiffCost"] = cost
-            print(f"""INFO: case{caseindex}: \n    startTime: {start}\n    endTime: {end}\n    diffCost: {cost}""")
+            print(f"INFO: case{caseindex}: \n    diffCost: {cost}")
 
     def result_statistics(self):
         t = 0
@@ -849,7 +861,7 @@ class AutoTestCls():
         print("*"*100+"\n")
         print(f"        本次回归测试共执行 {t+f} 条case, 其中:\n")
         print(f"            仿真成功: {t} 条\n")
-        print(f"           仿真成功case中对比时间超过golden20%的： {c}条\n")
+        print(f"            仿真成功 中对比时间超过golden20%的： {c}条\n")
         print(f"            仿真失败: {f} 条\n")
         print(f"            结果对比成功: {dt} 条\n")
         print(f"            结果对比失败: {df} 条\n")
@@ -884,7 +896,20 @@ class AutoTestCls():
         pd.set_option('display.max_rows', 1000000)
         pd.set_option('display.max_colwidth', 1000000)
         pd.set_option('display.width', 1000000)
-        print(failed_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
+        # print(failed_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
+    
+        sim_fail_df = failed_df[failed_df['SimulatorStat'] == 0]
+        print("WARNING 仿真失败: ")
+        print(sim_fail_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
+
+        diff_fail_df = failed_df[(failed_df['SimulatorStat'] == 1) & ((failed_df['outdiff'] == False) | (failed_df['outdiff'].isna()))]
+        print("WARNING 结果对比失败: ")
+        print(diff_fail_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
+
+        time_out_df = failed_df[(failed_df['SimulatorStat'] == 1) & (failed_df['time_div'] == 0)]
+        print("WARNING 对比时间超过 golden 20%: ")
+        print(time_out_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
+
         return len(failed_df['spFile'])
 
 
@@ -902,7 +927,7 @@ if __name__ == '__main__':
     parser.add_argument("--rp", type=str, default="all", help="""path to test case""")
     parser.add_argument("--cn", type=str, default="", help="case name")
     parser.add_argument("--si", type=str, default="all", help="execute case selector, all、hisi、huali")
-    parser.add_argument("-b", "--btdVersion", type=str, default="rf", help="btdsim version: base, plus, rf")
+    parser.add_argument("--bv", type=str, default="rf", help="btdsim version: base, plus, rf")
     parser.add_argument("--ccost", type=str, default=1, help="Simulatorcost Compare")
     parser.add_argument("--logtime", type=int, default=0, help="Whether to compare the cputime and walltime")
     opt = parser.parse_args()
