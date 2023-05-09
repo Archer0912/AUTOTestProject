@@ -12,7 +12,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import collections
 from tool_utils import get_rmse, get_mape, AlignDataLen, max_diff, cos_sim
-import threading
+import multiprocessing as mp
 import sys
 
 
@@ -32,6 +32,8 @@ class AutoTestCls():
             "all": "All_regress_Cases",
             "hisi": "hisiCaseAll",
             "huali": "regress_Cases_all-cmg-bulk_20230307-1400",
+            "hbt": "hbt_regression",
+            "K3": "K3_regression",
             "0": "All_regress_Cases",
             "1": "hisiCaseAll",
             "2": "regress_Cases_all-cmg-bulk_20230307-1400",
@@ -53,6 +55,9 @@ class AutoTestCls():
         self.cases_nodes_path = os.path.join(self.test_dir, "cases_nodes.xlsx")
         self.output_folder = os.path.join(self.test_dir, "output")
         self.case_dir = os.path.join(self.test_dir, opt.cn)
+        # 父进程与子进程的共享数据
+        self.sim_data = dict()
+        self.diff_data = dict()
 
         # 需要跳过不进行测试的case
         self.not_check_case = ["case999"]
@@ -119,6 +124,8 @@ class AutoTestCls():
                     if self.is_netlist(filename):
                         # sp文件
                         netfile = os.path.join(filepath, filename)
+                        if 'model' in netfile or 'gpdk' in netfile or 'INCLUDE' in netfile:
+                            continue
                         ret = self.not_check_file_list(netfile)
                         caseindex = netfile.split('case')[1].split('/')[0]
                         if(ret == 1):
@@ -126,8 +133,6 @@ class AutoTestCls():
                         if self.exsign == "huali" and int(caseindex) >=1000:
                             continue
                         elif self.exsign == "hisi" and int(caseindex) <=1000:
-                            continue
-                        if 'model' in netfile or 'gpdk' in netfile or 'INCLUDE' in netfile:
                             continue
                         self.spfile_Num += 1
 
@@ -209,21 +214,22 @@ class AutoTestCls():
             print("INFO RUN cmd: {}".format(RunCmd))
             cost = int((end - start) * 1000) / 1000
 
-            self.data_df_simulator.loc[netfileID, "Simulatorcost"] = cost
-            self.data_df_diff.loc[netfileID, "Simulatorcost"] = cost
-            # print("Simulatorcost: {}".format(self.data_df_simulator.loc[netfileID].Simulatorcost))
-            # print("rcmd:", RunCmd)
+            self.sim_data[netfileID]["Simulatorcost"] = cost
+            # self.data_df_simulator.loc[netfileID, "Simulatorcost"] = cost
+            # self.data_df_diff.loc[netfileID, "Simulatorcost"] = cost
+
 
     # 执行仿真
     def sim_folder(self,thread_list):
         for index in range(1, self.spfile_Num + 1):
+            self.sim_data[index] = mp.Manager().dict()
             # 找case对应的bench文件结果
             ref_file = self.data_df_diff.loc[index].RefoutFile
             if not os.path.exists(ref_file):
                 self.data_df_diff.loc[index, "RefoutFile"] = None
                 self.data_df_diff.loc[index, "RefoutFile"] = None
             # 执行仿真
-            t1 = threading.Thread(target=self.run_simulation_g,args=(index,))
+            t1 = mp.Process(target=self.run_simulation_g, args=(index,), daemon=True)
             thread_list.append(t1)
 
     # 修改文件后缀
@@ -450,7 +456,7 @@ class AutoTestCls():
                 simulator_cost = self.data_df_diff.loc[id, "Simulatorcost"]
                 caseindex = self.getCaseIndex(id)
                 stand_cost = self.check_time_dict[caseindex]
-                if simulator_cost > 100:
+                if float(simulator_cost) >= 100:
                     diff_cost = (simulator_cost - stand_cost)/ stand_cost *100
                     tag = self.case_limit[caseindex]
                     self.data_df_diff.loc[id,"cost_div"] = '%.3f'%diff_cost+"%"
@@ -773,59 +779,82 @@ class AutoTestCls():
                             except TypeError as e:
                                 print("Errors occured in plotting. {}".format(e))
 
-    def diffout(self):
+    def diffout(self, thread_list2):
         for netId in range(1, self.spfile_Num + 1):
-            start = time.time()
-            caseindex = self.getCaseIndex(netId)
-            tag = self.case_limit[caseindex]
-            if self.version == "base" and self.data_df_diff.loc[netId].SimulatorStat:
-                if tag == "base" or tag == "plus":
-                    self.data_df_diff.loc[netId, "outdiff"] = "PASS"
-                    continue
-            elif self.version == "plus" and self.data_df_diff.loc[netId].SimulatorStat:
-                if tag == "plus":
-                    self.data_df_diff.loc[netId, "outdiff"] = "PASS"
-                    continue
-            else: 
-                pass
-            
-            if self.data_df_diff.loc[netId].SimulatorStat & os.path.exists(self.data_df_diff.loc[netId].outFile):
-                outfile = self.data_df_diff.loc[netId].outFile
-                # print(outfile)
-                # bench文件
-                ref_file = self.data_df_diff.loc[netId].RefoutFile
+            self.diff_data[netId] = mp.Manager().dict()
+            t2 = mp.Process(target=self.calc_deviation, args=(netId,), daemon=True)
+            thread_list2.append(t2)
 
-                compare = None
-                com_result = str({})
-                # 解析两份out文件，找到对比的内容，并执行对比
-                # print(f"error info: {self.data_df_diff.loc[j]}")
-                try:
-                    if os.path.exists(outfile) and os.path.exists(ref_file):
+    def calc_deviation(self, netId):
+        start = time.time()
+        caseindex = self.getCaseIndex(netId)
+        tag = self.case_limit[caseindex]
+        if self.version == "base" and self.data_df_diff.loc[netId].SimulatorStat:
+            if tag == "base" or tag == "plus":
+                # self.data_df_diff.loc[netId, "outdiff"] = "PASS"
+                self.diff_data[netId]["outdiff"] = "PASS"
+                print(f"INFO: {self.data_df_diff.loc[netId].outFile} 不进行结果比较")
+                return 1
+        elif self.version == "plus" and self.data_df_diff.loc[netId].SimulatorStat:
+            if tag == "plus":
+                print(f"INFO: {self.data_df_diff.loc[netId].outFile} 不进行结果比较")
+                # self.data_df_diff.loc[netId, "outdiff"] = "PASS"
+                self.diff_data[netId]["outdiff"] = "PASS"
+                return 1
+        else: 
+            pass
+        
+        if self.data_df_diff.loc[netId].SimulatorStat & os.path.exists(self.data_df_diff.loc[netId].outFile):
+            outfile = self.data_df_diff.loc[netId].outFile
+            # print(outfile)
+            # bench文件
+            ref_file = self.data_df_diff.loc[netId].RefoutFile
 
-                        results_1_dict, plotname_arr1 = self.outfile_parser(outfile)
-                        results_2_dict, plotname_arr2 = self.outfile_parser(ref_file)
+            compare = None
+            com_result = str({})
+            # 解析两份out文件，找到对比的内容，并执行对比
+            # print(f"error info: {self.data_df_diff.loc[j]}")
+            try:
+                if os.path.exists(outfile) and os.path.exists(ref_file):
 
-                        # 计算误差
-                        print(f"\nINFO: Start calculating the deviation:")
-                        print(f"    {outfile}")
-                        compare, com_result = self.calc_error(netId, results_1_dict, results_2_dict)
+                    results_1_dict, plotname_arr1 = self.outfile_parser(outfile)
+                    results_2_dict, plotname_arr2 = self.outfile_parser(ref_file)
 
-                    # 如果参数指定了保存图片，则开始画图
-                        if opt.savefig:
-                            self.save_plot(netId, results_1_dict, results_2_dict, compare)
-                    AnalysisTypes = list(set(plotname_arr1))
-                    self.data_df_diff.loc[netId, "AnalysisType"] = ";".join(AnalysisTypes)
-                    self.data_df_diff.loc[netId, "outdiff"] = compare
-                    self.data_df_diff.loc[netId, "outdiffdetail"] = com_result
-                except Exception as err:
-                    # print(f"outfile: {outfile}, ref_file: {ref_file}")
-                    print(f"ERROR INFO: {self.data_df_diff.loc[netId]}")
-                    print('ERROR MSG: ' + str(err))
-            
-            end = time.time()
-            cost = end-start
-            self.data_df_diff.loc[netId, "outdiffCost"] = cost
-            print(f"INFO: case{caseindex}: \n    diffCost: {cost}")
+                    # 计算误差
+                    compare, com_result = self.calc_error(netId, results_1_dict, results_2_dict)
+
+                # 如果参数指定了保存图片，则开始画图
+                    if opt.savefig:
+                        self.save_plot(netId, results_1_dict, results_2_dict, compare)
+                AnalysisTypes = list(set(plotname_arr1))
+                self.diff_data[netId]["AnalysisType"] = ";".join(AnalysisTypes)
+                self.diff_data[netId]["outdiff"] = compare
+                self.diff_data[netId]["outdiffdetail"] = com_result
+                # self.data_df_diff.loc[netId, "AnalysisType"] = ";".join(AnalysisTypes)
+                # self.data_df_diff.loc[netId, "outdiff"] = compare
+                # self.data_df_diff.loc[netId, "outdiffdetail"] = com_result
+            except Exception as err:
+                # print(f"outfile: {outfile}, ref_file: {ref_file}")
+                print(f"ERROR INFO: {self.data_df_diff.loc[netId]}")
+                print('ERROR MSG: ' + str(err))
+        
+        end = time.time()
+        cost = end-start
+        self.diff_data[netId]["outdiffCost"] = cost
+        # self.data_df_diff.loc[netId, "outdiffCost"] = cost
+        # print(f"\nINFO: Start calculating the deviation:")
+        print(f"\nINFO: {outfile} 误差计算耗时: \n    diffCost: {cost}")
+
+    def update_df_data(self):
+        for netId in self.sim_data.keys():
+            self.data_df_simulator.loc[netId, "Simulatorcost"] = self.sim_data[netId]["Simulatorcost"]
+            self.data_df_diff.loc[netId, "Simulatorcost"] = self.sim_data[netId]["Simulatorcost"]
+
+        for netId in self.diff_data.keys():
+            self.data_df_diff.loc[netId, "AnalysisType"] = self.diff_data[netId]["AnalysisType"]
+            self.data_df_diff.loc[netId, "outdiff"] = self.diff_data[netId]["outdiff"]
+            self.data_df_diff.loc[netId, "outdiffdetail"] = self.diff_data[netId]["outdiffdetail"]
+            self.data_df_diff.loc[netId, "outdiffCost"] = self.diff_data[netId]["outdiffCost"]
 
     def result_statistics(self):
         t = 0
@@ -841,16 +870,16 @@ class AutoTestCls():
                 t+=1
                 if diff_time == 0:
                     c+=1
+                if diff_status==True or diff_status=="PASS":
+                    dt+=1
+                else:
+                    df+=1
             else:
                 f+=1
-            if diff_status==True or diff_status=="PASS":
-                dt+=1
-            else:
-                df+=1
         r = open(f"{self.test_dir}/result_statistics.txt", "w")
         r.write(f"本次回归测试共执行{t+f}条case, 其中:\n")
         r.write(f"    仿真成功: {t} 条\n")
-        r.write(f"    仿真成功case中对比时间超过golden20%的： {c}条\n")
+        r.write(f"    仿真成功case中对比时间超过golden 20%的： {c}条\n")
         r.write(f"    仿真失败: {f} 条\n")
         r.write(f"    结果对比成功: {dt} 条\n")
         r.write(f"    结果对比失败: {df} 条\n")
@@ -861,7 +890,7 @@ class AutoTestCls():
         print("*"*100+"\n")
         print(f"        本次回归测试共执行 {t+f} 条case, 其中:\n")
         print(f"            仿真成功: {t} 条\n")
-        print(f"            仿真成功 中对比时间超过golden20%的： {c}条\n")
+        print(f"           仿真成功case中对比时间超过golden 20%的： {c}条\n")
         print(f"            仿真失败: {f} 条\n")
         print(f"            结果对比成功: {dt} 条\n")
         print(f"            结果对比失败: {df} 条\n")
@@ -891,7 +920,7 @@ class AutoTestCls():
         df = self.data_df_diff
         failed_df = df[(df['SimulatorStat'] == 0) | (df['outdiff'] == False) |  (df['time_div'] == 0) | (df['outdiff'].isna())]
         # 可以在大数据量下，没有省略号
-        print("总计失败：" + str(len(failed_df)) + "个用例" + "\n")
+        print("INFO: 总计失败：" + str(len(failed_df)) + "个用例" + "\n")
         pd.set_option('display.max_columns', 1000000)
         pd.set_option('display.max_rows', 1000000)
         pd.set_option('display.max_colwidth', 1000000)
@@ -899,15 +928,15 @@ class AutoTestCls():
         # print(failed_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
     
         sim_fail_df = failed_df[failed_df['SimulatorStat'] == 0]
-        print("WARNING 仿真失败: ")
+        print(f"\nWARNING 仿真失败: {len(sim_fail_df)}条")
         print(sim_fail_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
 
         diff_fail_df = failed_df[(failed_df['SimulatorStat'] == 1) & ((failed_df['outdiff'] == False) | (failed_df['outdiff'].isna()))]
-        print("WARNING 结果对比失败: ")
+        print(f"\nWARNING 结果对比失败: {len(diff_fail_df)}条")
         print(diff_fail_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
 
-        time_out_df = failed_df[(failed_df['SimulatorStat'] == 1) & (failed_df['time_div'] == 0)]
-        print("WARNING 对比时间超过 golden 20%: ")
+        time_out_df = failed_df[(failed_df['SimulatorStat'] == 1) & (failed_df['time_div'] == 0) & (failed_df['outdiff'] == True)]
+        print(f"\nWARNING 对比时间超过 golden 15%: {len(time_out_df)}条")
         print(time_out_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
 
         return len(failed_df['spFile'])
@@ -947,12 +976,12 @@ if __name__ == '__main__':
 
     #等待子线程全部运行完毕
     for t in thread_list:
-        t.setDaemon(True)  # 设置为守护线程，不会因主线程结束而中断
+        # t.daemon(True)  # 设置为守护线程，不会因主线程结束而中断
         t.start()
         time.sleep(1)
+
     for t in thread_list:
         t.join()  # 子线程全部加入，主线程等所有子线程运行完毕
-
 
     # 仿真状态统计
     print("start check out simulator stat...")
@@ -962,7 +991,25 @@ if __name__ == '__main__':
     # print("start check out Analysis Type...")
     # atc.global_out_check()
 
-    # 时间对比(TODO)
+    print("start diff out file...")
+
+    # 结果对比线程池
+    thread_list2 = []
+
+    atc.diffout(thread_list2)
+
+    for t2 in thread_list2:
+        # t.daemon(True)  # 设置为守护线程，不会因主线程结束而中断
+        t2.start()
+        time.sleep(1)
+
+    for t2 in thread_list2:
+        t2.join()  # 子线程全部加入，主线程等所有子线程运行完毕
+    
+    # 同步父线程和子线程的数据
+    atc.update_df_data()
+
+    # 时间对比(DONE)
     if opt.ccost == 1:
         print("start check out simulator cost...")
         atc.time_divcheck()
@@ -970,18 +1017,15 @@ if __name__ == '__main__':
         print("start check out log CPU time and Wall time...")
         atc.diff_logtime()
 
+    # 将仿真结果写入excel
     date_str = time.strftime("%m%d%H%M%S", time.localtime())
     if opt.savesimcsv:
-        # 将仿真结果写入excel
         writer1 = pd.ExcelWriter(f'{atc.output_folder}/data_df_simulator_{date_str}.xlsx')
         atc.data_df_simulator.to_excel(writer1)
         writer1.save()
 
-    # 仿真结果对比，并写入excel
-    print("start diff out file...")
-    if opt.savediffcsv:
-        atc.diffout()
-        
+    # 将对比结果写入excel
+    if opt.savediffcsv:  
         writer2 = pd.ExcelWriter(f'{atc.output_folder}/data_df_diff_{date_str}.xlsx')
         atc.data_df_diff.to_excel(writer2)
         writer2.save()
