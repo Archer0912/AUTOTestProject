@@ -804,6 +804,10 @@ class AutoTestCls():
         else: 
             pass
         
+        self.diff_data[netId]["outdiffCost"]=None
+        self.diff_data[netId]["AnalysisType"]=None
+        self.diff_data[netId]["outdiffdetail"]=None
+        self.diff_data[netId]["outdiff"]=None
         if self.data_df_diff.loc[netId].SimulatorStat & os.path.exists(self.data_df_diff.loc[netId].outFile):
             outfile = self.data_df_diff.loc[netId].outFile
             # print(outfile)
@@ -838,12 +842,12 @@ class AutoTestCls():
                 print(f"ERROR INFO: {self.data_df_diff.loc[netId]}")
                 print('ERROR MSG: ' + str(err))
         
-        end = time.time()
-        cost = end-start
-        self.diff_data[netId]["outdiffCost"] = cost
-        # self.data_df_diff.loc[netId, "outdiffCost"] = cost
-        # print(f"\nINFO: Start calculating the deviation:")
-        print(f"\nINFO: {outfile} 误差计算耗时: \n    diffCost: {cost}")
+            end = time.time()
+            cost = end-start
+            self.diff_data[netId]["outdiffCost"] = cost
+            # self.data_df_diff.loc[netId, "outdiffCost"] = cost
+            # print(f"\nINFO: Start calculating the deviation:")
+            print(f"INFO: {outfile} 误差计算耗时: \n    diffCost: {cost}\n")
 
     def update_df_data(self):
         for netId in self.sim_data.keys():
@@ -936,7 +940,7 @@ class AutoTestCls():
         print(diff_fail_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
 
         time_out_df = failed_df[(failed_df['SimulatorStat'] == 1) & (failed_df['time_div'] == 0) & (failed_df['outdiff'] == True)]
-        print(f"\nWARNING 对比时间超过 golden 15%: {len(time_out_df)}条")
+        print(f"\nWARNING 对比时间超过 golden 20%: {len(time_out_df)}条")
         print(time_out_df.loc[:, ['spFile', 'SimulatorStat', 'Simulatorcost', 'cost_div', 'outdiff']])
 
         return len(failed_df['spFile'])
